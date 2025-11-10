@@ -1,1 +1,29 @@
-{"RESULT":{"CODE":"ERROR-500","MESSAGE":"서버 오류입니다.\n지속적으로 발생시 열린 데이터 광장으로 문의(Q&A) 바랍니다."}}
+{
+  "SubwayStationInfo": {
+    "row": [
+      { "STATN_NM": "잠실",     "LINE_NUM": "2호선", "FR_CODE": "216",  "XPOINT_WGS": "127.100200", "YPOINT_WGS": "37.513300" },
+      { "STATN_NM": "잠실새내", "LINE_NUM": "2호선", "FR_CODE": "217",  "XPOINT_WGS": "127.086000", "YPOINT_WGS": "37.511000" },
+      { "STATN_NM": "잠실나루", "LINE_NUM": "2호선", "FR_CODE": "215",  "XPOINT_WGS": "127.103790", "YPOINT_WGS": "37.520730" },
+      { "STATN_NM": "종합운동장","LINE_NUM": "2호선", "FR_CODE": "218",  "XPOINT_WGS": "127.073640", "YPOINT_WGS": "37.511000" },
+
+      { "STATN_NM": "홍대입구", "LINE_NUM": "2호선", "FR_CODE": "239",  "XPOINT_WGS": "126.923720", "YPOINT_WGS": "37.557192" },
+      { "STATN_NM": "합정",     "LINE_NUM": "2호선", "FR_CODE": "238",  "XPOINT_WGS": "126.913739", "YPOINT_WGS": "37.549463" },
+      { "STATN_NM": "신촌",     "LINE_NUM": "2호선", "FR_CODE": "240",  "XPOINT_WGS": "126.936900", "YPOINT_WGS": "37.555200" },
+      { "STATN_NM": "이대",     "LINE_NUM": "2호선", "FR_CODE": "241",  "XPOINT_WGS": "126.946100", "YPOINT_WGS": "37.559000" },
+
+      { "STATN_NM": "강남",     "LINE_NUM": "2호선", "FR_CODE": "222",  "XPOINT_WGS": "127.027580", "YPOINT_WGS": "37.497950" },
+      { "STATN_NM": "역삼",     "LINE_NUM": "2호선", "FR_CODE": "221",  "XPOINT_WGS": "127.036456", "YPOINT_WGS": "37.500622" },
+      { "STATN_NM": "선릉",     "LINE_NUM": "2호선", "FR_CODE": "220",  "XPOINT_WGS": "127.049008", "YPOINT_WGS": "37.504503" },
+      { "STATN_NM": "교대",     "LINE_NUM": "2호선", "FR_CODE": "223",  "XPOINT_WGS": "127.013720", "YPOINT_WGS": "37.493470" },
+
+      { "STATN_NM": "성수",     "LINE_NUM": "2호선", "FR_CODE": "211",  "XPOINT_WGS": "127.056473", "YPOINT_WGS": "37.544581" },
+      { "STATN_NM": "건대입구", "LINE_NUM": "2호선", "FR_CODE": "212",  "XPOINT_WGS": "127.070230", "YPOINT_WGS": "37.540693" },
+      { "STATN_NM": "왕십리",   "LINE_NUM": "2호선", "FR_CODE": "208",  "XPOINT_WGS": "127.037712", "YPOINT_WGS": "37.561533" },
+
+      { "STATN_NM": "신도림",   "LINE_NUM": "2호선", "FR_CODE": "234",  "XPOINT_WGS": "126.891295", "YPOINT_WGS": "37.508725" },
+      { "STATN_NM": "신림",     "LINE_NUM": "2호선", "FR_CODE": "230",  "XPOINT_WGS": "126.929715", "YPOINT_WGS": "37.484201" },
+
+      { "STATN_NM": "서울역",   "LINE_NUM": "1호선", "FR_CODE": "133",  "XPOINT_WGS": "126.972300", "YPOINT_WGS": "37.553600" }
+    ]
+  }
+}
