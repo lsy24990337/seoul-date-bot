@@ -1,31 +1,27 @@
-// app.js — DEMO ONLY
+// app.js — DEMO ONLY (paste-all)
 require('dotenv').config();
 const express = require('express');
+const fetch = require('node-fetch'); // npm i node-fetch@2
 const app = express();
 
 app.use(express.json());
 
-const fetch = require('node-fetch'); // 없다면 설치: npm i node-fetch
-
-
-// === 지도 이미지 프록시: /map/static?lat=37.51&lng=127.10&w=600&h=400&z=16 ===
-const fetch = require('node-fetch'); // 없으면 설치: npm i node-fetch
+// ======================
+// 1) 지도 이미지 프록시
+// ======================
+// 예: /map/static?lat=37.51&lng=127.10&w=640&h=360&z=15
 app.get('/map/static', async (req, res) => {
   try {
     const lat = parseFloat(req.query.lat);
     const lng = parseFloat(req.query.lng);
-    const w = Math.min(parseInt(req.query.w || '600', 10), 1280);
-    const h = Math.min(parseInt(req.query.h || '400', 10), 1280);
-    const z = Math.min(Math.max(parseInt(req.query.z || '16', 10), 5), 19);
+    const w = Math.min(parseInt(req.query.w || '640', 10), 1280);
+    const h = Math.min(parseInt(req.query.h || '360', 10), 1280);
+    const z = Math.min(Math.max(parseInt(req.query.z || '15', 10), 5), 19);
+    if (isNaN(lat) || isNaN(lng)) return res.status(400).send('lat/lng required');
 
-    if (isNaN(lat) || isNaN(lng)) {
-      return res.status(400).send('lat/lng required');
-    }
+    const { NAVER_ID, NAVER_SECRET, GOOGLE_STATIC_MAPS_KEY } = process.env;
 
-    // 1) NAVER Static Map (헤더 인증)
-    const NAVER_ID = process.env.NAVER_ID;
-    const NAVER_SECRET = process.env.NAVER_SECRET;
-
+    // (1) NAVER Static Map (헤더 인증)
     if (NAVER_ID && NAVER_SECRET) {
       const marker = `type:t|size:mid|pos:${lng} ${lat}`;
       const url = `https://naveropenapi.apigw.ntruss.com/map-static/v2/raster?center=${lng},${lat}&level=${20-z}&w=${w}&h=${h}&scale=2&markers=${encodeURIComponent(marker)}`;
@@ -35,46 +31,42 @@ app.get('/map/static', async (req, res) => {
           'X-NCP-APIGW-API-KEY': NAVER_SECRET
         }
       });
-      if (!r.ok) {
-        const t = await r.text();
-        return res.status(500).send(`naver static map error: ${t}`);
-      }
+      if (!r.ok) return res.status(500).send('naver static map error');
       res.set('Content-Type', 'image/png');
       return r.body.pipe(res);
     }
 
-    // 2) GOOGLE Static Maps (쿼리 키)
-    const GMAPS_KEY = process.env.GOOGLE_STATIC_MAPS_KEY;
-    if (GMAPS_KEY) {
-      const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${z}&size=${w}x${h}&scale=2&markers=${lat},${lng}&key=${GMAPS_KEY}`;
-      // 이미지라서 리다이렉트로도 OK
+    // (2) Google Static Maps (쿼리 키)
+    if (GOOGLE_STATIC_MAPS_KEY) {
+      const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${z}&size=${w}x${h}&scale=2&markers=${lat},${lng}&key=${GOOGLE_STATIC_MAPS_KEY}`;
       return res.redirect(url);
     }
 
-    // 3) 아무 키도 없으면 임시 플레이스홀더
-    const placeholder = `https://via.placeholder.com/${w}x${h}.png?text=Map+Preview`;
-    return res.redirect(placeholder);
+    // (3) 키 없으면 플레이스홀더
+    return res.redirect(`https://via.placeholder.com/${w}x${h}.png?text=Map+Preview`);
   } catch (e) {
+    console.error(e);
     return res.status(500).send('map proxy error');
   }
 });
 
+// ======================
+// 2) DEMO 설정/유틸
+// ======================
+const DEMO = process.env.DEMO_MODE === '1';     // 데모 모드 플래그
+const MAP_URL = process.env.MAP_URL || null;    // 모든 카드 "지도 열기" 버튼을 고정 URL로 쓰고 싶을 때
 
-// ===== DEMO 모드 플래그 & 지도 URL =====
-const DEMO = process.env.DEMO_MODE === '1';         // 반드시 1로
-const MAP_URL = process.env.MAP_URL || null;        // 직접 넣고 싶으면 여기 환경변수로
 const mapUrlFor = (baseName) =>
   MAP_URL || `https://map.naver.com/v5/search/${encodeURIComponent(baseName + '역 가볼만한곳')}`;
 
-// ===== 시드 랜덤 / 날짜→기상치 합성 =====
 function seededRand(seed){ let x = Math.sin(seed) * 10000; return x - Math.floor(x); }
 function seedFrom(str){ let h=0; for(let i=0;i<str.length;i++) h=(h*31+str.charCodeAt(i))>>>0; return h; }
 
 function synthWeather(dateISO){
   const d = dateISO ? new Date(`${dateISO}T09:00:00+09:00`) : new Date();
   const m = d.getMonth() + 1;
-  let base = { POP: 20, WSD: 2, TMN: 10, TMX: 18 };               // 봄/가을
-  if (m>=6 && m<=8) base = { POP: 35, WSD: 3, TMN: 20, TMX: 30 }; // 여름
+  let base = { POP: 20, WSD: 2, TMN: 10, TMX: 18 };                 // 봄/가을
+  if (m>=6 && m<=8) base = { POP: 35, WSD: 3, TMN: 20, TMX: 30 };   // 여름
   else if (m>=12 || m<=2) base = { POP: 15, WSD: 2, TMN: -5, TMX: 5 }; // 겨울
 
   const s = seedFrom(d.toISOString().slice(0,10));
@@ -100,7 +92,7 @@ function reasonText(w){
   return '날씨가 무난해요 → 실외 추천';
 }
 
-// ===== 역별 데모 카드 DB (없으면 자동 생성) =====
+// 역별 데모 카드 DB
 const DEMO_PLACES = {
   '잠실': [
     { title: '석촌호수 산책',         cat: '공원/호수',  addr: '송파구 잠실동',            link: 'https://map.naver.com/v5/search/석촌호수' },
@@ -135,13 +127,15 @@ function toCard(item, baseName){
       subtitle: `${item.cat} | ${item.addr}`,
       buttons: [
         { text: '상세보기',   postback: item.link },
-        { text: '지도 열기', postback: mapUrlFor(baseName) } // <- 네가 MAP_URL로 덮어쓸 수 있음
+        { text: '지도 열기', postback: mapUrlFor(baseName) }
       ]
     }
   };
 }
 
-// ===== 라우트 =====
+// ======================
+// 3) 라우트
+// ======================
 app.get('/', (_,res)=>res.send('DF webhook alive (demo)'));
 
 app.post('/webhook', (req,res)=>{
@@ -152,36 +146,69 @@ app.post('/webhook', (req,res)=>{
     const stationBase = stationRaw.replace(/역$/, '');
     const stationName = stationRaw.endsWith('역') ? stationRaw : `${stationRaw}역`;
 
-    // ISO / YYYY-MM-DD 둘 다 받음
+    // 날짜: ISO 또는 YYYY-MM-DD
     const dateParam = (p.date||'').toString();
-    const dateISO = dateParam.includes('T') ? dateParam.slice(0,10) :
-                    (/^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : null);
+    const dateISO = dateParam.includes('T') ? dateParam.slice(0,10)
+                  : (/^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : null);
 
-    // --- DEMO: 합성 날씨 + 계획/사유
+    // 합성 날씨 + 계획/사유
     const w = synthWeather(dateISO);
     const plan = decidePlan(w);
     const reason = reasonText(w);
 
-    // --- DEMO: 카드 6장 (사전 DB 없으면 자동 생성)
+    // 역 → 대략 좌표(데모용)
+    const STATION_COORDS = {
+      '잠실':     { lat: 37.5133,  lng: 127.1002 },
+      '홍대입구': { lat: 37.557192, lng: 126.92372 },
+      '강남':     { lat: 37.49795, lng: 127.02758 }
+    };
+    const coord = STATION_COORDS[stationBase] || { lat: 37.5665, lng: 126.9780 }; // 서울시청 기본
+
+    // 요청 호스트로 절대경로 생성 (도메인 수동 입력 불필요)
+    const base = `${req.protocol}://${req.get('host')}`;
+    const imgUrl = `${base}/map/static?lat=${coord.lat}&lng=${coord.lng}&w=640&h=360&z=15`;
+
+    // 지도 열기 링크
+    const mapOpen = mapUrlFor(stationBase);
+
+    // 지도 이미지(표준) + 지도 카드(표준)
+    const imageMsg = { image: { imageUri: imgUrl } };
+    const mapCard = {
+      card: {
+        title: `${stationName} 지도 미리보기`,
+        subtitle: '지도를 눌러 상세 위치를 확인하세요',
+        imageUri: imgUrl,
+        buttons: [{ text: '지도 열기', postback: mapOpen }]
+      }
+    };
+
+    // 장소 카드 6장 (사전 DB 없으면 자동 생성)
     const list = (DEMO_PLACES[stationBase] || Array.from({length:6}).map((_,i)=>({
       title: `${stationBase} 가볼만한 곳 #${i+1}`,
       cat:   i%2 ? '카페/식당' : '전시/활동',
       addr:  `서울 ${stationBase} 주변`,
-      link:  mapUrlFor(stationBase)
+      link:  mapOpen
     }))).slice(0,6);
-
     const cards = list.map(it => toCard(it, stationBase));
 
     const header =
       `${dateISO || '오늘'} ${stationName} 기준으로 ${plan==='indoor'?'실내':'실외'} 코스를 추천해요.\n` +
       `(${reason} | POP:${w.POP}% WSD:${w.WSD}m/s TMN:${w.TMN}°C TMX:${w.TMX}°C)`;
 
-    return res.json({ fulfillmentMessages: [ { text:{ text:[header] } }, ...cards ] });
+    return res.json({
+      fulfillmentMessages: [
+        { text:{ text:[header] } },
+        imageMsg,    // 지도 이미지
+        mapCard,     // 지도 카드
+        ...cards     // 장소 카드 6장
+      ]
+    });
   }catch(e){
     console.error(e);
     return res.json({ fulfillmentText: '데모 서버 오류가 발생했어요.' });
   }
 });
 
+// ======================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, ()=>console.log('listening (demo) on', PORT));
