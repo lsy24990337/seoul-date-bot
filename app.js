@@ -5,6 +5,48 @@ const app = express();
 
 app.use(express.json());
 
+const fetch = require('node-fetch'); // 없다면 설치: npm i node-fetch
+
+// === 지도 이미지 프록시: /map/static?lat=37.51&lng=127.10&w=640&h=360&z=16 ===
+app.get('/map/static', async (req, res) => {
+  try {
+    const lat = parseFloat(req.query.lat);
+    const lng = parseFloat(req.query.lng);
+    const w = Math.min(parseInt(req.query.w || '640', 10), 1280);
+    const h = Math.min(parseInt(req.query.h || '360', 10), 1280);
+    const z = Math.min(Math.max(parseInt(req.query.z || '15', 10), 5), 19);
+
+    if (isNaN(lat) || isNaN(lng)) return res.status(400).send('lat/lng required');
+
+    const { NAVER_ID, NAVER_SECRET, GOOGLE_STATIC_MAPS_KEY } = process.env;
+
+    // 1) NAVER Static Map (헤더 인증)
+    if (NAVER_ID && NAVER_SECRET) {
+      const marker = `type:t|size:mid|pos:${lng} ${lat}`;
+      const url = `https://naveropenapi.apigw.ntruss.com/map-static/v2/raster?center=${lng},${lat}&level=${20-z}&w=${w}&h=${h}&scale=2&markers=${encodeURIComponent(marker)}`;
+      const r = await fetch(url, { headers: {
+        'X-NCP-APIGW-API-KEY-ID': NAVER_ID,
+        'X-NCP-APIGW-API-KEY': NAVER_SECRET
+      }});
+      if (!r.ok) return res.status(500).send(`naver static map error`);
+      res.set('Content-Type', 'image/png');
+      return r.body.pipe(res);
+    }
+
+    // 2) GOOGLE Static Maps (쿼리 키)
+    if (GOOGLE_STATIC_MAPS_KEY) {
+      const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${z}&size=${w}x${h}&scale=2&markers=${lat},${lng}&key=${GOOGLE_STATIC_MAPS_KEY}`;
+      return res.redirect(url);
+    }
+
+    // 3) 키 없으면 플레이스홀더
+    return res.redirect(`https://via.placeholder.com/${w}x${h}.png?text=Map+Preview`);
+  } catch (e) {
+    return res.status(500).send('map proxy error');
+  }
+});
+
+
 // === 지도 이미지 프록시: /map/static?lat=37.51&lng=127.10&w=600&h=400&z=16 ===
 const fetch = require('node-fetch'); // 없으면 설치: npm i node-fetch
 app.get('/map/static', async (req, res) => {
