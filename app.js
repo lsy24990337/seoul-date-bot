@@ -1,4 +1,12 @@
 const DEMO = process.env.DEMO_MODE === '1';
+const FORCE_STUB = process.env.FORCE_STUB === '1'; // ✅ 새로 추가 (모든 외부 API 우회)
+
+const HARDCODE_STATIONS = { // ✅ 외부 API 없이도 좌표 보장
+  "잠실":     { lat: 37.5133, lng: 127.1002 },
+  "홍대입구": { lat: 37.557192, lng: 126.92372 },
+  "강남":     { lat: 37.49795,  lng: 127.02758 },
+  "서울역":   { lat: 37.5536,   lng: 126.9723 }
+};
 // app.js (robust date parsing fixed)
 require('dotenv').config();
 const express = require('express');
@@ -34,6 +42,13 @@ try { stationCache = require('./stations.json'); } catch(_) { stationCache=null;
 
 // ---------- 역이름 -> 위경도 ----------
 async function getStationLatLng(stationName){
+  const key=(stationName||'').replace(/역$/,'').trim();
+  if(!key) return null;
+
+  // ✅ 하드코드 우선
+  if (HARDCODE_STATIONS[key]) {
+    return { ...HARDCODE_STATIONS[key], source:'hardcoded' };
+  }
   const key=(stationName||'').replace(/역$/,'').trim();
   if(!key) return null;
 
@@ -84,6 +99,9 @@ function getBaseDateTime(targetDateKST=new Date()){
 
 // ---------- 기상청: 단기예보 (D+0~3) ----------
 async function getShortTermForecast(lat,lng,dateStr){
+  if (process.env.FORCE_STUB === '1') { // ✅
+    return { POP: 20, PTY: 0, TMN: 10, TMX: 17, WSD: 3 };
+  }
   if(!process.env.KMA_API_KEY) return null;
   const norm = normalizeDateStr(dateStr);
   try{
@@ -155,6 +173,13 @@ function reasonText(w){
 
 // ---------- 네이버 지역검색 ----------
 async function searchNaverLocal(query){
+  if (process.env.FORCE_STUB === '1') { // ✅
+    return [
+      { title:'<b>잠실 카페 A</b>', category:'카페', address:'서울 송파구 어딘가', link:'https://map.naver.com' },
+      { title:'<b>잠실 전시 B</b>', category:'전시', address:'서울 송파구 어딘가', link:'https://map.naver.com' },
+      { title:'<b>잠실 식당 C</b>', category:'식당', address:'서울 송파구 어딘가', link:'https://map.naver.com' }
+    ];
+  }
   const id=process.env.NAVER_ID, sc=process.env.NAVER_SECRET;
   if(!id || !sc) return [];
   try{
@@ -247,4 +272,15 @@ app.post('/webhook', async (req,res)=>{
 // ---------- health ----------
 app.get('/', (_,res)=>res.send('DF webhook alive'));
 app.listen(process.env.PORT || 8080, ()=>console.log('listening...'));
-
+app.get('/test/ping', (_,res)=>res.json({ ok:true })); // ✅ 살아있음 체크
+app.get('/debug/env', (_,res)=>{
+  res.json({
+    PORT: !!process.env.PORT,
+    KMA_API_KEY: !!process.env.KMA_API_KEY,
+    SEOUL_API_KEY: !!process.env.SEOUL_API_KEY,
+    NAVER_ID: !!process.env.NAVER_ID,
+    NAVER_SECRET: !!process.env.NAVER_SECRET,
+    DEMO_MODE: process.env.DEMO_MODE || '0',
+    FORCE_STUB: process.env.FORCE_STUB || '0'
+  });
+});
