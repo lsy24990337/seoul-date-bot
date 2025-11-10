@@ -1,286 +1,132 @@
-const DEMO = process.env.DEMO_MODE === '1';
-const FORCE_STUB = process.env.FORCE_STUB === '1'; // ✅ 새로 추가 (모든 외부 API 우회)
-
-const HARDCODE_STATIONS = { // ✅ 외부 API 없이도 좌표 보장
-  "잠실":     { lat: 37.5133, lng: 127.1002 },
-  "홍대입구": { lat: 37.557192, lng: 126.92372 },
-  "강남":     { lat: 37.49795,  lng: 127.02758 },
-  "서울역":   { lat: 37.5536,   lng: 126.9723 }
-};
-// app.js (robust date parsing fixed)
+// app.js — DEMO ONLY
 require('dotenv').config();
 const express = require('express');
-const fetch = require('node-fetch');
-const bodyParser = require('body-parser');
-
 const app = express();
-app.use(bodyParser.json());
 
-// ---------- utils ----------
-function maxNum(a){ if(!a?.length) return NaN; return Math.max(...a.map(Number)); }
-function minNum(a){ if(!a?.length) return NaN; return Math.min(...a.map(Number)); }
-function avgNum(a){ if(!a?.length) return NaN; const s=a.map(Number).reduce((x,y)=>x+y,0); return s/a.length; }
-function stripTags(s=''){ return s.replace(/<[^>]+>/g,''); }
+app.use(express.json());
 
-// 날짜 문자열 표준화: 'YYYY-MM-DD' 또는 ISO('YYYY-MM-DDTHH:MM:SS+09:00') 모두 허용
-function normalizeDateStr(input){
-  if(!input) return null;
-  const s = String(input);
-  // ISO 형태면 앞 10자리(YYYY-MM-DD)만 사용
-  if (s.includes('T')) return s.slice(0, 10);
-  // 이미 YYYY-MM-DD 형태면 그대로
-  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
-  // YYYYMMDD 형태 등은 변환 시도
-  const m = s.match(/^(\d{4})(\d{2})(\d{2})$/);
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
-  return null; // 알 수 없는 형식
+// ===== DEMO 모드 플래그 & 지도 URL =====
+const DEMO = process.env.DEMO_MODE === '1';         // 반드시 1로
+const MAP_URL = process.env.MAP_URL || null;        // 직접 넣고 싶으면 여기 환경변수로
+const mapUrlFor = (baseName) =>
+  MAP_URL || `https://map.naver.com/v5/search/${encodeURIComponent(baseName + '역 가볼만한곳')}`;
+
+// ===== 시드 랜덤 / 날짜→기상치 합성 =====
+function seededRand(seed){ let x = Math.sin(seed) * 10000; return x - Math.floor(x); }
+function seedFrom(str){ let h=0; for(let i=0;i<str.length;i++) h=(h*31+str.charCodeAt(i))>>>0; return h; }
+
+function synthWeather(dateISO){
+  const d = dateISO ? new Date(`${dateISO}T09:00:00+09:00`) : new Date();
+  const m = d.getMonth() + 1;
+  let base = { POP: 20, WSD: 2, TMN: 10, TMX: 18 };               // 봄/가을
+  if (m>=6 && m<=8) base = { POP: 35, WSD: 3, TMN: 20, TMX: 30 }; // 여름
+  else if (m>=12 || m<=2) base = { POP: 15, WSD: 2, TMN: -5, TMX: 5 }; // 겨울
+
+  const s = seedFrom(d.toISOString().slice(0,10));
+  const POP = Math.min(90, Math.max(0, Math.round(base.POP + seededRand(s+1)*30 - 15)));
+  const WSD = Math.max(0, Math.round((base.WSD + seededRand(s+2)*2 - 1) * 10) / 10);
+  const TMN = Math.round(base.TMN + seededRand(s+3)*4 - 2);
+  const TMX = Math.round(base.TMX + seededRand(s+4)*4 - 2);
+  return { POP, PTY: POP>=60 ? 1 : 0, WSD, TMN, TMX };
 }
 
-// ---------- stations cache ----------
-let stationCache=null;
-try { stationCache = require('./stations.json'); } catch(_) { stationCache=null; }
-
-// ---------- 역이름 -> 위경도 ----------
-async function getStationLatLng(stationName){
-  const key=(stationName||'').replace(/역$/,'').trim();
-  if(!key) return null;
-
-  // ✅ 하드코드 우선
-  if (HARDCODE_STATIONS[key]) {
-    return { ...HARDCODE_STATIONS[key], source:'hardcoded' };
-  }
-  const key=(stationName||'').replace(/역$/,'').trim();
-  if(!key) return null;
-
-  if(stationCache?.SubwayStationInfo?.row){
-    const f=stationCache.SubwayStationInfo.row.find(s => (s.STATN_NM||'').trim()===key);
-    if(f) return { lat:+f.YPOINT_WGS, lng:+f.XPOINT_WGS };
-  }
-
-  const apiKey = process.env.SEOUL_API_KEY;
-  if(!apiKey) return null;
-  try{
-    const url = `http://openapi.seoul.go.kr:8088/${apiKey}/json/SubwayStationInfo/1/1000/`;
-    const r = await fetch(url);
-    const j = await r.json();
-    const rows = j?.SubwayStationInfo?.row || [];
-    const f = rows.find(s => (s.STATN_NM||'').trim()===key)
-            || rows.find(s => (s.STATN_NM||'').includes(key)); // 부분일치 보조
-    if(!f) return null;
-    return { lat:+f.YPOINT_WGS, lng:+f.XPOINT_WGS };
-  }catch(_){ return null; }
-}
-
-// ---------- 위경도 -> 기상청 격자 ----------
-function latLngToKmaGrid(lat, lon){
-  const RE=6371.00877, GRID=5.0, SLAT1=30.0, SLAT2=60.0, OLON=126.0, OLAT=38.0, XO=43, YO=136;
-  const DEGRAD=Math.PI/180.0;
-  let re=RE/GRID, sl1=SLAT1*DEGRAD, sl2=SLAT2*DEGRAD, olon=OLON*DEGRAD, olat=OLAT*DEGRAD;
-  let sn=Math.tan(Math.PI*0.25+sl2*0.5)/Math.tan(Math.PI*0.25+sl1*0.5);
-  sn=Math.log(Math.cos(sl1)/Math.cos(sl2))/Math.log(sn);
-  let sf=Math.tan(Math.PI*0.25+sl1*0.5); sf=Math.pow(sf,sn)*Math.cos(sl1)/sn;
-  let ro=Math.tan(Math.PI*0.25+olat*0.5); ro=re*sf/Math.pow(ro,sn);
-  let ra=Math.tan(Math.PI*0.25+lat*DEGRAD*0.5); ra=re*sf/Math.pow(ra,sn);
-  let th=lon*DEGRAD-olon; if(th>Math.PI) th-=2*Math.PI; if(th<-Math.PI) th+=2*Math.PI; th*=sn;
-  const x=Math.floor(ra*Math.sin(th)+XO+0.5), y=Math.floor(ro-ra*Math.cos(th)+YO+0.5);
-  return { nx:x, ny:y };
-}
-
-// ---------- 단기예보 base ----------
-function getBaseDateTime(targetDateKST=new Date()){
-  const baseTimes=[2,5,8,11,14,17,20,23];
-  const y=targetDateKST.getFullYear();
-  const m=String(targetDateKST.getMonth()+1).padStart(2,'0');
-  const d=String(targetDateKST.getDate()).padStart(2,'0');
-  const hh=targetDateKST.getHours();
-  let baseH=baseTimes[0]; for(const t of baseTimes) if(hh>=t) baseH=t;
-  return { base_date:`${y}${m}${d}`, base_time:String(baseH).padStart(2,'0')+'00' };
-}
-
-// ---------- 기상청: 단기예보 (D+0~3) ----------
-async function getShortTermForecast(lat,lng,dateStr){
-  if (process.env.FORCE_STUB === '1') { // ✅
-    return { POP: 20, PTY: 0, TMN: 10, TMX: 17, WSD: 3 };
-  }
-  if(!process.env.KMA_API_KEY) return null;
-  const norm = normalizeDateStr(dateStr);
-  try{
-    const {nx,ny}=latLngToKmaGrid(lat,lng);
-    const target = norm ? new Date(`${norm}T09:00:00+09:00`) : new Date();
-    const {base_date,base_time}=getBaseDateTime(target);
-    const qs=new URLSearchParams({
-      serviceKey:process.env.KMA_API_KEY, numOfRows:'500', pageNo:'1', dataType:'JSON',
-      base_date, base_time, nx:String(nx), ny:String(ny)
-    });
-    const url=`https://apis.data.go.kr/1360000/VilageFcstInfoService_2.0/getVilageFcst?${qs}`;
-    const r=await fetch(url); const j=await r.json();
-    const items=j?.response?.body?.items?.item||[];
-    const ymd=`${target.getFullYear()}${String(target.getMonth()+1).padStart(2,'0')}${String(target.getDate()).padStart(2,'0')}`;
-    const dayItems=items.filter(it=>it.fcstDate===ymd && +it.fcstTime>=900 && +it.fcstTime<=1800);
-    const by={}; for(const it of dayItems){ (by[it.category]??=[]).push(it.fcstValue); }
-    const pop=maxNum(by.POP), pty=maxNum(by.PTY), t3h=avgNum(by.T3H), wsd=avgNum(by.WSD);
-    const tmx=maxNum(by.TMX), tmn=minNum(by.TMN);
-    return {
-      POP: isNaN(pop)?0:pop, PTY: isNaN(pty)?0:pty,
-      T3H: isNaN(t3h)?null:t3h, WSD: isNaN(wsd)?0:wsd,
-      TMX: isNaN(tmx)?(isNaN(t3h)?null:t3h+2):tmx,
-      TMN: isNaN(tmn)?(isNaN(t3h)?null:t3h-2):tmn
-    };
-  }catch(_){ return null; }
-}
-
-// ---------- 기상청: 중기예보 (D+4~10) ----------
-async function getMidTermForecast(dateStr){
-  if(!process.env.KMA_API_KEY) return null;
-  const norm = normalizeDateStr(dateStr);
-  if (!norm) return null;
-  try{
-    const target=new Date(`${norm}T09:00:00+09:00`);
-    const now=new Date();
-    const diff=Math.floor((target - new Date(now.toDateString()))/(1000*60*60*24));
-    const regId='11B00000'; // 수도권
-    const baseTime=now.getHours()>=18?'1800':'0600';
-    const ymd=now.toISOString().slice(0,10).replace(/-/g,'');
-    const url=`https://apis.data.go.kr/1360000/MidFcstInfoService/getMidLandFcst?serviceKey=${process.env.KMA_API_KEY}&dataType=JSON&numOfRows=10&pageNo=1&regId=${regId}&tmFc=${ymd}${baseTime}`;
-    const r=await fetch(url); const j=await r.json();
-    const item=j?.response?.body?.items?.item?.[0]; if(!item) return null;
-    const idx=Math.min(Math.max(diff,4),10);
-    const popAm=item[`rnSt${idx}Am`], popPm=item[`rnSt${idx}Pm`];
-    const tmin=item[`taMin${idx}`], tmax=item[`taMax${idx}`];
-    return {
-      POP: Math.max(Number(popAm||0), Number(popPm||0)),
-      PTY: 0, TMN: Number(tmin||0), TMX: Number(tmax||0), WSD: 0
-    };
-  }catch(_){ return null; }
-}
-
-// ---------- 판단 ----------
 function decidePlan(w){
-  if(!w) return 'indoor';
-  if(w.POP>=40 || w.PTY>0) return 'indoor';
-  if((w.TMX??100)>=31 || (w.TMN??-100)<=-3) return 'indoor';
-  if(w.WSD>=7) return 'indoor';
+  if (w.POP>=40 || w.PTY>0) return 'indoor';
+  if (w.TMX>=31 || w.TMN<=-3) return 'indoor';
+  if (w.WSD>=7) return 'indoor';
   return 'outdoor';
 }
 function reasonText(w){
-  if(!w) return '기본 안전 모드로 실내를 추천해요';
-  if(w.POP>=40 || w.PTY>0) return '강수 가능성이 높아요 → 실내 추천';
-  if((w.TMX??100)>=31) return '일 최고기온이 높아요 → 실내 추천';
-  if((w.TMN??-100)<=-3) return '일 최저기온이 낮아요 → 실내 추천';
-  if(w.WSD>=7) return '바람이 강해요 → 실내 추천';
+  if (w.POP>=60 || w.PTY>0) return '강수 가능성이 높아요 → 실내 추천';
+  if (w.POP>=40) return '소나기 가능성이 있어요 → 실내가 안전';
+  if (w.TMX>=31) return '더위가 강해요 → 실내 추천';
+  if (w.TMN<=-3) return '추워요 → 실내 추천';
+  if (w.WSD>=7) return '바람이 강해요 → 실내 추천';
   return '날씨가 무난해요 → 실외 추천';
 }
 
-// ---------- 네이버 지역검색 ----------
-async function searchNaverLocal(query){
-  if (process.env.FORCE_STUB === '1') { // ✅
-    return [
-      { title:'<b>잠실 카페 A</b>', category:'카페', address:'서울 송파구 어딘가', link:'https://map.naver.com' },
-      { title:'<b>잠실 전시 B</b>', category:'전시', address:'서울 송파구 어딘가', link:'https://map.naver.com' },
-      { title:'<b>잠실 식당 C</b>', category:'식당', address:'서울 송파구 어딘가', link:'https://map.naver.com' }
-    ];
-  }
-  const id=process.env.NAVER_ID, sc=process.env.NAVER_SECRET;
-  if(!id || !sc) return [];
-  try{
-    const u=new URL('https://openapi.naver.com/v1/search/local.json');
-    u.searchParams.set('query', query);
-    u.searchParams.set('display','10');
-    const r=await fetch(u.toString(),{
-      headers:{ 'X-Naver-Client-Id':id, 'X-Naver-Client-Secret':sc }
-    });
-    const j=await r.json();
-    return j.items || [];
-  }catch(_){ return []; }
-}
-function toCard(item){
-  const title=stripTags(item.title);
+// ===== 역별 데모 카드 DB (없으면 자동 생성) =====
+const DEMO_PLACES = {
+  '잠실': [
+    { title: '석촌호수 산책',         cat: '공원/호수',  addr: '송파구 잠실동',            link: 'https://map.naver.com/v5/search/석촌호수' },
+    { title: '롯데월드몰 아쿠아리움',  cat: '아쿠아리움',  addr: '송파구 올림픽로 300',      link: 'https://map.naver.com/v5/entry/place/11885223' },
+    { title: '서울스카이 전망대',      cat: '전망대',      addr: '롯데월드타워 117~123F',    link: 'https://map.naver.com/v5/entry/place/37685259' },
+    { title: '방이맛골',              cat: '먹거리골목',  addr: '송파구 방이동',            link: 'https://map.naver.com/v5/search/방이맛골' },
+    { title: '롯데월드 아이스링크',    cat: '실내스포츠',  addr: '잠실동 40-1',             link: 'https://map.naver.com/v5/entry/place/11839421' },
+    { title: '롯데시네마(월드타워)',   cat: '영화관',      addr: '송파구 올림픽로 300',      link: 'https://map.naver.com/v5/entry/place/37721657' }
+  ],
+  '홍대입구': [
+    { title: '홍대 거리 버스킹',       cat: '스트리트',    addr: '마포구 홍익로 일대',        link: 'https://map.naver.com/v5/search/홍대%20버스킹' },
+    { title: '연남동 경의선숲길',      cat: '산책',        addr: '마포구 연남동',            link: 'https://map.naver.com/v5/search/경의선숲길' },
+    { title: '홍대 카페 골목',         cat: '카페',        addr: '마포구 서교동',            link: 'https://map.naver.com/v5/search/홍대%20카페' },
+    { title: '홍대 놀이터',            cat: '공간',        addr: '서교동 361-10',            link: 'https://map.naver.com/v5/entry/place/11806559' },
+    { title: 'KT&G 상상마당',          cat: '전시/공연',   addr: '마포구 와우산로 144',       link: 'https://map.naver.com/v5/entry/place/11586241' },
+    { title: '카카오프렌즈 스토어',     cat: '스토어',      addr: '홍익로5길 29',            link: 'https://map.naver.com/v5/entry/place/37969913' }
+  ],
+  '강남': [
+    { title: '강남역 카페 투어',       cat: '카페',        addr: '강남대로 일대',            link: 'https://map.naver.com/v5/search/강남역%20카페' },
+    { title: '역삼 실내 볼링',         cat: '실내스포츠',  addr: '역삼동',                  link: 'https://map.naver.com/v5/search/역삼%20볼링' },
+    { title: '코엑스 아쿠아리움',       cat: '아쿠아리움',  addr: '영동대로 513',            link: 'https://map.naver.com/v5/entry/place/11510549' },
+    { title: '봉은사 산책',            cat: '사찰/산책',   addr: '삼성동',                  link: 'https://map.naver.com/v5/entry/place/11627959' },
+    { title: '도곡동 스파',            cat: '스파/찜질',   addr: '강남구 도곡동',           link: 'https://map.naver.com/v5/search/강남%20스파' },
+    { title: '메가박스 코엑스',        cat: '영화관',      addr: '삼성동',                  link: 'https://map.naver.com/v5/entry/place/11632063' }
+  ]
+};
+
+function toCard(item, baseName){
   return {
-    card:{
-      title,
-      subtitle:`${item.category} | ${item.address}`,
-      buttons:[{ text:'상세보기', postback:item.link }]
+    card: {
+      title: item.title,
+      subtitle: `${item.cat} | ${item.addr}`,
+      buttons: [
+        { text: '상세보기',   postback: item.link },
+        { text: '지도 열기', postback: mapUrlFor(baseName) } // <- 네가 MAP_URL로 덮어쓸 수 있음
+      ]
     }
   };
 }
 
-// ---------- webhook ----------
-app.post('/webhook', async (req,res)=>{
+// ===== 라우트 =====
+app.get('/', (_,res)=>res.send('DF webhook alive (demo)'));
+
+app.post('/webhook', (req,res)=>{
   try{
-        if (DEMO) {
-      const q = req.body.queryResult || {};
-      const p = q.parameters || {};
-      const stationRaw = p.station || '강남';
-      const station = stationRaw.endsWith('역') ? stationRaw : `${stationRaw}역`;
-      const dateParam = p.date;
-      const dateISO = (String(dateParam || '').slice(0, 10)) || '오늘';
+    const q = req.body.queryResult || {};
+    const p = q.parameters || {};
+    const stationRaw = (p.station || '강남').toString();
+    const stationBase = stationRaw.replace(/역$/, '');
+    const stationName = stationRaw.endsWith('역') ? stationRaw : `${stationRaw}역`;
 
-      const header = `${dateISO} ${station} 기준으로 실내 코스를 추천해요.\n(데모 모드: 외부 API 호출 없이 샘플 제공)`;
-      const demoCards = [
-        { card: { title: `${station} 근처 카페 A`, subtitle: `카페 | 서울 어딘가`, buttons: [{ text: '상세보기', postback: 'https://map.naver.com' }] } },
-        { card: { title: `${station} 근처 전시 B`, subtitle: `전시 | 서울 어딘가`, buttons: [{ text: '상세보기', postback: 'https://map.naver.com' }] } },
-        { card: { title: `${station} 근처 식당 C`, subtitle: `식당 | 서울 어딘가`, buttons: [{ text: '상세보기', postback: 'https://map.naver.com' }] } }
-      ];
-      return res.json({
-        fulfillmentMessages: [
-          { text: { text: [header] } },
-          ...demoCards
-        ]
-      });
-    }
-    const q=req.body.queryResult||{};
-    const p=q.parameters||{};
-    const stationRaw=p.station;
-    const dateParam=p.date; // can be 'YYYY-MM-DD' or ISO
+    // ISO / YYYY-MM-DD 둘 다 받음
+    const dateParam = (p.date||'').toString();
+    const dateISO = dateParam.includes('T') ? dateParam.slice(0,10) :
+                    (/^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : null);
 
-    // 날짜 정규화
-    const dateISO = normalizeDateStr(dateParam); // 'YYYY-MM-DD' or null
-    const today = new Date();
-    const tForDiff = dateISO ? new Date(`${dateISO}T09:00:00+09:00`) : today;
-    const dDiff = Math.floor((tForDiff - new Date(today.toDateString()))/(1000*60*60*24));
+    // --- DEMO: 합성 날씨 + 계획/사유
+    const w = synthWeather(dateISO);
+    const plan = decidePlan(w);
+    const reason = reasonText(w);
 
-    // 역 좌표
-    const station = stationRaw?.endsWith('역') ? stationRaw : `${stationRaw}역`;
-    const coord = await getStationLatLng(station);
-    if(!coord){
-      return res.json({ fulfillmentText:`‘${stationRaw}’ 역을 찾지 못했어요. 예: 강남역/홍대입구역 처럼 입력해 주세요!` });
-    }
+    // --- DEMO: 카드 6장 (사전 DB 없으면 자동 생성)
+    const list = (DEMO_PLACES[stationBase] || Array.from({length:6}).map((_,i)=>({
+      title: `${stationBase} 가볼만한 곳 #${i+1}`,
+      cat:   i%2 ? '카페/식당' : '전시/활동',
+      addr:  `서울 ${stationBase} 주변`,
+      link:  mapUrlFor(stationBase)
+    }))).slice(0,6);
 
-    // 예보 선택
-    let weather=null;
-    if(dDiff<=3) weather=await getShortTermForecast(coord.lat,coord.lng,dateISO);
-    else if(dDiff<=10) weather=await getMidTermForecast(dateISO);
-    else return res.json({ fulfillmentText:`${dateISO}은(는) 10일 이후예요. 10일 이내 날짜로 입력해주세요.` });
+    const cards = list.map(it => toCard(it, stationBase));
 
-    const planType=decidePlan(weather);
-    const reason=reasonText(weather);
-
-    // 장소 추천 (실패해도 무시)
-    let places=[]; try{ places = await searchNaverLocal(`${station} 가볼만한곳`); }catch(_){ places=[]; }
-    const cards=places.slice(0,6).map(toCard);
-
-    const header = `${dateISO || '오늘'} ${station} 기준으로 ${planType==='indoor'?'실내':'실외'} 코스를 추천해요.\n(${reason}` +
-                   `${weather?` | POP:${weather.POP}% WSD:${weather.WSD}m/s TMN:${weather.TMN??'-'}°C TMX:${weather.TMX??'-'}°C`:''})`;
+    const header =
+      `${dateISO || '오늘'} ${stationName} 기준으로 ${plan==='indoor'?'실내':'실외'} 코스를 추천해요.\n` +
+      `(${reason} | POP:${w.POP}% WSD:${w.WSD}m/s TMN:${w.TMN}°C TMX:${w.TMX}°C)`;
 
     return res.json({ fulfillmentMessages: [ { text:{ text:[header] } }, ...cards ] });
   }catch(e){
     console.error(e);
-    return res.json({ fulfillmentText:'서버 오류가 발생했어요. 잠시 후 다시 시도해주세요.' });
+    return res.json({ fulfillmentText: '데모 서버 오류가 발생했어요.' });
   }
 });
 
-// ---------- health ----------
-app.get('/', (_,res)=>res.send('DF webhook alive'));
-app.listen(process.env.PORT || 8080, ()=>console.log('listening...'));
-app.get('/test/ping', (_,res)=>res.json({ ok:true })); // ✅ 살아있음 체크
-app.get('/debug/env', (_,res)=>{
-  res.json({
-    PORT: !!process.env.PORT,
-    KMA_API_KEY: !!process.env.KMA_API_KEY,
-    SEOUL_API_KEY: !!process.env.SEOUL_API_KEY,
-    NAVER_ID: !!process.env.NAVER_ID,
-    NAVER_SECRET: !!process.env.NAVER_SECRET,
-    DEMO_MODE: process.env.DEMO_MODE || '0',
-    FORCE_STUB: process.env.FORCE_STUB || '0'
-  });
-});
+const PORT = process.env.PORT || 8080;
+app.listen(PORT, ()=>console.log('listening (demo) on', PORT));
