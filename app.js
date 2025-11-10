@@ -1,15 +1,16 @@
-// app.js — DEMO ONLY (paste-all)
+// app.js — DEMO ONLY (final)
 require('dotenv').config();
 const express = require('express');
 const fetch = require('node-fetch'); // npm i node-fetch@2
 const app = express();
 
+// 프록시 신뢰(렌더/리버스 프록시 환경에서 https 판단)
+app.set('trust proxy', true);
 app.use(express.json());
 
 // ======================
 // 1) 지도 이미지 프록시 (항상 PNG 스트리밍)
 // ======================
-// 예: /map/static?lat=37.51&lng=127.10&w=640&h=360&z=15
 app.get('/map/static', async (req, res) => {
   try {
     const lat = parseFloat(req.query.lat);
@@ -21,7 +22,10 @@ app.get('/map/static', async (req, res) => {
 
     const { NAVER_ID, NAVER_SECRET, GOOGLE_STATIC_MAPS_KEY } = process.env;
 
-    // (1) NAVER Static Map (헤더 인증)
+    // 간단 접근 로그
+    console.log('[map/static]', { lat, lng, w, h, z, hasNaver: !!(NAVER_ID && NAVER_SECRET), hasGoogle: !!GOOGLE_STATIC_MAPS_KEY });
+
+    // (1) NAVER Static Map
     if (NAVER_ID && NAVER_SECRET) {
       const marker = `type:t|size:mid|pos:${lng} ${lat}`;
       const url = `https://naveropenapi.apigw.ntruss.com/map-static/v2/raster?center=${lng},${lat}&level=${20 - z}&w=${w}&h=${h}&scale=2&markers=${encodeURIComponent(marker)}`;
@@ -31,16 +35,24 @@ app.get('/map/static', async (req, res) => {
           'X-NCP-APIGW-API-KEY': NAVER_SECRET
         }
       });
-      if (!r.ok) return res.status(500).send('naver static map error');
+      if (!r.ok) {
+        const t = await r.text();
+        console.error('naver static map error:', t);
+        return res.status(500).send('naver static map error');
+      }
       res.set('Content-Type', 'image/png');
       return r.body.pipe(res);
     }
 
-    // (2) Google Static Maps (키로 요청 → PNG 스트리밍)
+    // (2) Google Static Maps
     if (GOOGLE_STATIC_MAPS_KEY) {
       const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${z}&size=${w}x${h}&scale=2&markers=${lat},${lng}&key=${GOOGLE_STATIC_MAPS_KEY}`;
       const r = await fetch(url);
-      if (!r.ok) return res.status(500).send('google static map error');
+      if (!r.ok) {
+        const t = await r.text();
+        console.error('google static map error:', t);
+        return res.status(500).send('google static map error');
+      }
       res.set('Content-Type', 'image/png');
       return r.body.pipe(res);
     }
@@ -51,7 +63,7 @@ app.get('/map/static', async (req, res) => {
     res.set('Content-Type', 'image/png');
     return r.body.pipe(res);
   } catch (e) {
-    console.error(e);
+    console.error('map proxy error:', e);
     return res.status(500).send('map proxy error');
   }
 });
@@ -59,8 +71,8 @@ app.get('/map/static', async (req, res) => {
 // ======================
 // 2) DEMO 설정/유틸
 // ======================
-const DEMO = process.env.DEMO_MODE === '1';   // 데모 모드 플래그
-const MAP_URL = process.env.MAP_URL || null;  // 모든 카드 "지도 열기" 버튼 고정 URL (선택)
+const DEMO = process.env.DEMO_MODE === '1';
+const MAP_URL = process.env.MAP_URL || null;
 
 const mapUrlFor = (baseName) =>
   MAP_URL || `https://map.naver.com/v5/search/${encodeURIComponent(baseName + '역 가볼만한곳')}`;
@@ -71,9 +83,9 @@ function seedFrom(str){ let h=0; for(let i=0;i<str.length;i++) h=(h*31+str.charC
 function synthWeather(dateISO){
   const d = dateISO ? new Date(`${dateISO}T09:00:00+09:00`) : new Date();
   const m = d.getMonth() + 1;
-  let base = { POP: 20, WSD: 2, TMN: 10, TMX: 18 };                 // 봄/가을
-  if (m>=6 && m<=8) base = { POP: 35, WSD: 3, TMN: 20, TMX: 30 };   // 여름
-  else if (m>=12 || m<=2) base = { POP: 15, WSD: 2, TMN: -5, TMX: 5 }; // 겨울
+  let base = { POP: 20, WSD: 2, TMN: 10, TMX: 18 };
+  if (m>=6 && m<=8) base = { POP: 35, WSD: 3, TMN: 20, TMX: 30 };
+  else if (m>=12 || m<=2) base = { POP: 15, WSD: 2, TMN: -5, TMX: 5 };
 
   const s = seedFrom(d.toISOString().slice(0,10));
   const POP = Math.min(90, Math.max(0, Math.round(base.POP + seededRand(s+1)*30 - 15)));
@@ -98,7 +110,6 @@ function reasonText(w){
   return '날씨가 무난해요 → 실외 추천';
 }
 
-// 역별 데모 카드 DB
 const DEMO_PLACES = {
   '잠실': [
     { title: '석촌호수 산책',         cat: '공원/호수',  addr: '송파구 잠실동',            link: 'https://map.naver.com/v5/search/석촌호수' },
@@ -170,9 +181,14 @@ app.post('/webhook', (req,res)=>{
     };
     const coord = STATION_COORDS[stationBase] || { lat: 37.5665, lng: 126.9780 }; // 서울시청 기본
 
-    // 요청 호스트로 절대경로 생성 (도메인 수동 입력 불필요)
-    const base = `${req.protocol}://${req.get('host')}`;
-    const imgUrl = `${base}/map/static?lat=${coord.lat}&lng=${coord.lng}&w=640&h=360&z=15`;
+    // 프록시/리버스프록시 환경에서 HTTPS 강제
+    const fwdProto = (req.get('x-forwarded-proto') || '').split(',')[0].trim();
+    const proto = fwdProto || req.protocol || 'https';
+    const host = req.get('host');
+    const base = `${proto === 'http' ? 'https' : proto}://${host}`;
+
+    // 캐시버스터로 매 요청 이미지 새로 호출
+    const imgUrl = `${base}/map/static?lat=${coord.lat}&lng=${coord.lng}&w=640&h=360&z=15&t=${Date.now()}`;
 
     // 지도 열기 링크
     const mapOpen = mapUrlFor(stationBase);
@@ -215,14 +231,14 @@ app.post('/webhook', (req,res)=>{
     return res.json({
       fulfillmentMessages: [
         { text:{ text:[header] } },
-        imageMsg,      // 지도 이미지
-        mapCard,       // 지도 카드
-        richPayload,   // DF Messenger 리치콘텐츠
-        ...cards       // 장소 카드 6장
+        imageMsg,
+        mapCard,
+        richPayload,
+        ...cards
       ]
     });
   }catch(e){
-    console.error(e);
+    console.error('webhook error:', e);
     return res.json({ fulfillmentText: '데모 서버 오류가 발생했어요.' });
   }
 });
@@ -230,3 +246,4 @@ app.post('/webhook', (req,res)=>{
 // ======================
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, ()=>console.log('listening (demo) on', PORT));
+
