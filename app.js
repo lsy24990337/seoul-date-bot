@@ -7,7 +7,7 @@ const app = express();
 app.use(express.json());
 
 // ======================
-// 1) 지도 이미지 프록시
+// 1) 지도 이미지 프록시 (항상 PNG 스트리밍)
 // ======================
 // 예: /map/static?lat=37.51&lng=127.10&w=640&h=360&z=15
 app.get('/map/static', async (req, res) => {
@@ -24,7 +24,7 @@ app.get('/map/static', async (req, res) => {
     // (1) NAVER Static Map (헤더 인증)
     if (NAVER_ID && NAVER_SECRET) {
       const marker = `type:t|size:mid|pos:${lng} ${lat}`;
-      const url = `https://naveropenapi.apigw.ntruss.com/map-static/v2/raster?center=${lng},${lat}&level=${20-z}&w=${w}&h=${h}&scale=2&markers=${encodeURIComponent(marker)}`;
+      const url = `https://naveropenapi.apigw.ntruss.com/map-static/v2/raster?center=${lng},${lat}&level=${20 - z}&w=${w}&h=${h}&scale=2&markers=${encodeURIComponent(marker)}`;
       const r = await fetch(url, {
         headers: {
           'X-NCP-APIGW-API-KEY-ID': NAVER_ID,
@@ -36,14 +36,20 @@ app.get('/map/static', async (req, res) => {
       return r.body.pipe(res);
     }
 
-    // (2) Google Static Maps (쿼리 키)
+    // (2) Google Static Maps (키로 요청 → PNG 스트리밍)
     if (GOOGLE_STATIC_MAPS_KEY) {
       const url = `https://maps.googleapis.com/maps/api/staticmap?center=${lat},${lng}&zoom=${z}&size=${w}x${h}&scale=2&markers=${lat},${lng}&key=${GOOGLE_STATIC_MAPS_KEY}`;
-      return res.redirect(url);
+      const r = await fetch(url);
+      if (!r.ok) return res.status(500).send('google static map error');
+      res.set('Content-Type', 'image/png');
+      return r.body.pipe(res);
     }
 
-    // (3) 키 없으면 플레이스홀더
-    return res.redirect(`https://via.placeholder.com/${w}x${h}.png?text=Map+Preview`);
+    // (3) 키 없으면 플레이스홀더도 스트리밍
+    const ph = `https://via.placeholder.com/${w}x${h}.png?text=Map+Preview`;
+    const r = await fetch(ph);
+    res.set('Content-Type', 'image/png');
+    return r.body.pipe(res);
   } catch (e) {
     console.error(e);
     return res.status(500).send('map proxy error');
@@ -53,8 +59,8 @@ app.get('/map/static', async (req, res) => {
 // ======================
 // 2) DEMO 설정/유틸
 // ======================
-const DEMO = process.env.DEMO_MODE === '1';     // 데모 모드 플래그
-const MAP_URL = process.env.MAP_URL || null;    // 모든 카드 "지도 열기" 버튼을 고정 URL로 쓰고 싶을 때
+const DEMO = process.env.DEMO_MODE === '1';   // 데모 모드 플래그
+const MAP_URL = process.env.MAP_URL || null;  // 모든 카드 "지도 열기" 버튼 고정 URL (선택)
 
 const mapUrlFor = (baseName) =>
   MAP_URL || `https://map.naver.com/v5/search/${encodeURIComponent(baseName + '역 가볼만한곳')}`;
@@ -195,12 +201,24 @@ app.post('/webhook', (req,res)=>{
       `${dateISO || '오늘'} ${stationName} 기준으로 ${plan==='indoor'?'실내':'실외'} 코스를 추천해요.\n` +
       `(${reason} | POP:${w.POP}% WSD:${w.WSD}m/s TMN:${w.TMN}°C TMX:${w.TMX}°C)`;
 
+    // Dialogflow Messenger 전용 리치콘텐츠(웹에서 더 예쁨)
+    const richPayload = {
+      payload: {
+        richContent: [[
+          { type: "image", rawUrl: imgUrl, accessibilityText: `${stationName} 지도` },
+          { type: "info",  title: `${stationName} 지도 미리보기`, subtitle: "버튼을 눌러 네이버 지도를 열 수 있어요" },
+          { type: "button", text: "지도 열기", link: mapOpen }
+        ]]
+      }
+    };
+
     return res.json({
       fulfillmentMessages: [
         { text:{ text:[header] } },
-        imageMsg,    // 지도 이미지
-        mapCard,     // 지도 카드
-        ...cards     // 장소 카드 6장
+        imageMsg,      // 지도 이미지
+        mapCard,       // 지도 카드
+        richPayload,   // DF Messenger 리치콘텐츠
+        ...cards       // 장소 카드 6장
       ]
     });
   }catch(e){
