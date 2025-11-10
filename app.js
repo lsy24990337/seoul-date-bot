@@ -1,3 +1,4 @@
+const DEMO = process.env.DEMO_MODE === '1';
 // app.js (robust date parsing fixed)
 require('dotenv').config();
 const express = require('express');
@@ -181,6 +182,27 @@ function toCard(item){
 // ---------- webhook ----------
 app.post('/webhook', async (req,res)=>{
   try{
+        if (DEMO) {
+      const q = req.body.queryResult || {};
+      const p = q.parameters || {};
+      const stationRaw = p.station || '강남';
+      const station = stationRaw.endsWith('역') ? stationRaw : `${stationRaw}역`;
+      const dateParam = p.date;
+      const dateISO = (String(dateParam || '').slice(0, 10)) || '오늘';
+
+      const header = `${dateISO} ${station} 기준으로 실내 코스를 추천해요.\n(데모 모드: 외부 API 호출 없이 샘플 제공)`;
+      const demoCards = [
+        { card: { title: `${station} 근처 카페 A`, subtitle: `카페 | 서울 어딘가`, buttons: [{ text: '상세보기', postback: 'https://map.naver.com' }] } },
+        { card: { title: `${station} 근처 전시 B`, subtitle: `전시 | 서울 어딘가`, buttons: [{ text: '상세보기', postback: 'https://map.naver.com' }] } },
+        { card: { title: `${station} 근처 식당 C`, subtitle: `식당 | 서울 어딘가`, buttons: [{ text: '상세보기', postback: 'https://map.naver.com' }] } }
+      ];
+      return res.json({
+        fulfillmentMessages: [
+          { text: { text: [header] } },
+          ...demoCards
+        ]
+      });
+    }
     const q=req.body.queryResult||{};
     const p=q.parameters||{};
     const stationRaw=p.station;
